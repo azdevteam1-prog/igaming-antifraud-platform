@@ -22,7 +22,15 @@ async def create_rule(data: RuleCreate, db: AsyncSession = Depends(get_db)):
     await db.refresh(rule)
     return rule
 
-@router.patch("/{rule_id}", response_model=RuleOut)
+@router.get("/{rule_id}", response_model=RuleOut)
+async def get_rule(rule_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Rule).where(Rule.id == rule_id))
+    rule = result.scalar()
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+    return rule
+
+@router.put("/{rule_id}", response_model=RuleOut)
 async def update_rule(rule_id: str, data: RuleUpdate, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Rule).where(Rule.id == rule_id))
     rule = result.scalar()
@@ -42,14 +50,52 @@ async def delete_rule(rule_id: str, db: AsyncSession = Depends(get_db)):
     if rule:
         rule.status = "archived"
         await db.commit()
-    return {"ok": True}
+        return {"ok": True}
+    raise HTTPException(404, "Rule not found")
 
 @router.post("/{rule_id}/publish")
 async def publish_rule(rule_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Rule).where(Rule.id == rule_id))
     rule = result.scalar()
     if not rule:
-        raise HTTPException(404)
+        raise HTTPException(404, "Rule not found")
     rule.status = "live"
     await db.commit()
     return {"ok": True, "status": "live"}
+
+@router.post("/{rule_id}/test")
+async def test_rule(rule_id: str, test_data: dict, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Rule).where(Rule.id == rule_id))
+    rule = result.scalar()
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+    
+    # Simple rule evaluation logic
+    triggered = False
+    reason = ""
+    
+    if rule.condition_type == "threshold":
+        field = rule.condition_field
+        operator = rule.condition_operator
+        threshold = rule.condition_value
+        
+        if field in test_data:
+            value = test_data[field]
+            if operator == "gt" and value > threshold:
+                triggered = True
+                reason = f"{field} ({value}) > {threshold}"
+            elif operator == "lt" and value < threshold:
+                triggered = True
+                reason = f"{field} ({value}) < {threshold}"
+            elif operator == "eq" and value == threshold:
+                triggered = True
+                reason = f"{field} ({value}) == {threshold}"
+    
+    return {
+        "rule_id": rule_id,
+        "rule_name": rule.name,
+        "triggered": triggered,
+        "reason": reason,
+        "action": rule.action if triggered else None,
+        "test_data": test_data
+    }
