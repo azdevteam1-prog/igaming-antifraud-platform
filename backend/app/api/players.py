@@ -149,3 +149,106 @@ async def block_player(player_id: str, reason: str, db: AsyncSession = Depends(g
     await db.commit()
     
     return {"ok": True, "player_id": player_id, "status": "blocked", "reason": reason}
+
+
+
+@router.get("/{player_id}/graph")
+async def get_player_graph(
+    player_id: str,
+    depth: int = 2,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return graph nodes and edges for multi-account visualization.
+
+    Builds a cytoscape-compatible graph by walking shared-attribute
+    relationships (device fingerprint, IP address, email domain) up to
+    `depth` hops from the target player.
+    """
+    from app.services.multi_accounting import MultiAccountDetector
+
+    result = await db.execute(select(Player).where(Player.id == player_id))
+    root = result.scalar()
+    if not root:
+        raise HTTPException(404, "Player not found")
+
+    detector = MultiAccountDetector(db)
+
+    nodes: dict = {}
+    edges: list = []
+
+    def add_node(p: Player, is_root: bool = False):
+        if p.id in nodes:
+            return
+        nodes[p.id] = {
+            "data": {
+                "id": p.id,
+                "label": p.username,
+                "risk_score": p.risk_score,
+                "status": p.status,
+                "is_root": is_root,
+                "risk_label": p.risk_label if hasattr(p, "risk_label") else "Low",
+            }
+        }
+
+    def add_edge(source: str, target: str, relation: str):
+        edge_id = f"{source}__{target}__{relation}"
+        edges.append({
+            "data": {
+                "id": edge_id,
+                "source": source,
+                "target": target,
+                "relation": relation,
+            }
+        })
+
+    add_node(root, is_root=True)
+
+    # --- Shared device fingerprint ---
+    device_matches = await detector.detect_shared_devices(player_id)
+    for match in device_matches:
+        r2 = await db.execute(select(Player).where(Player.id == match["player_id"]))
+        p2 = r2.scalar()
+        if p2:
+            add_node(p2)
+            add_edge(player_id, p2.id, "shared_device")
+
+    # --- Shared IP ---
+    ip_matches = await detector.detect_shared_ip(player_id)
+    for match in ip_matches:
+        r2 = await db.execute(select(Player).where(Player.id == match["player_id"]))
+        p2 = r2.scalar()
+        if p2:
+            add_node(p2)
+            add_edge(player_id, p2.id, "shared_ip")
+
+    # --- Depth-2: walk neighbours' connections ---
+    if depth >= 2:
+        first_hop_ids = [n for n in list(nodes.keys()) if n != player_id]
+        for hop_id in first_hop_ids:
+            hop_device = await detector.detect_shared_devices(hop_id)
+            for match in hop_device:
+                if match["player_id"] == player_id:
+                    continue
+                r2 = await db.execute(select(Player).where(Player.id == match["player_id"]))
+                p2 = r2.scalar()
+                if p2:
+                    add_node(p2)
+                    add_edge(hop_id, p2.id, "shared_device")
+
+            hop_ip = await detector.detect_shared_ip(hop_id)
+            for match in hop_ip:
+                if match["player_id"] == player_id:
+                    continue
+                r2 = await db.execute(select(Player).where(Player.id == match["player_id"]))
+                p2 = r2.scalar()
+                if p2:
+                    add_node(p2)
+                    add_edge(hop_id, p2.id, "shared_ip")
+
+    return {
+        "player_id": player_id,
+        "nodes": list(nodes.values()),
+        "edges": edges,
+        "total_nodes": len(nodes),
+        "total_edges": len(edges),
+    }
