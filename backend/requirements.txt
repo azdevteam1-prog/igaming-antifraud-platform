@@ -12,3 +12,13 @@ faker==24.11.0
 networkx==3.3
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+
+# Machine Learning and Data Science
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.4.2
+xgboost==2.0.3
+joblib==1.4.0
+
+# WebSocket support
+websockets==12.0
